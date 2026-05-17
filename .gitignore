@@ -1,0 +1,27 @@
+# Unity 自動生成（不需要推）
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Uu]ser[Ss]ettings/
+
+# 系統檔
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDE
+.idea/
+.vscode/
+*.sln
+*.csproj
+
+# Live2D 大型 runtime（如果已在 Assets 裡就不用加）
+# Assets/Live2D/Cubism/Core/
+
+# 記得保留
+!Assets/
+!ProjectSettings/
+!Packages/
