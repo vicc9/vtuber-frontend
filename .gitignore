@@ -25,3 +25,8 @@ Desktop.ini
 !Assets/
 !ProjectSettings/
 !Packages/
+
+.env
+__pycache__/
+*.pyc
+static/audio/
