@@ -1,14 +1,14 @@
 using UnityEngine;
+using UnityEngine.EventSystems;
 
 /// <summary>
 /// 三平台（iOS / Android / WebGL）路由管理。
-/// 統一麥克風權限入口，並在 Start 時通知 StreamerClient 平台資訊。
+/// 步驟 16：新增觸控 / 滑鼠雙棲支援。
 /// </summary>
 public class PlatformManager : MonoBehaviour
 {
     public static PlatformManager Instance;
 
-    // AudioRecorder 由 Inspector 拖入，或 Awake 自動偵測
     private AudioRecorder _audioRecorder;
 
     void Awake()
@@ -32,16 +32,16 @@ public class PlatformManager : MonoBehaviour
     void DetectPlatform()
     {
 #if UNITY_IOS && !UNITY_EDITOR
-        Debug.Log("🍎 平台：iOS");
+        Debug.Log("平台：iOS");
         SetIOSSettings();
 #elif UNITY_ANDROID && !UNITY_EDITOR
-        Debug.Log("📱 平台：Android");
+        Debug.Log("平台：Android");
         SetAndroidSettings();
 #elif UNITY_WEBGL && !UNITY_EDITOR
-        Debug.Log("🌐 平台：WebGL");
+        Debug.Log("平台：WebGL");
         SetWebGLSettings();
 #else
-        Debug.Log("💻 平台：PC / Editor");
+        Debug.Log("平台：PC / Editor");
         SetPCSettings();
 #endif
     }
@@ -53,20 +53,21 @@ public class PlatformManager : MonoBehaviour
     {
         Application.targetFrameRate = 60;
         Screen.sleepTimeout = SleepTimeout.NeverSleep;
-        // 音訊 Session 由 StreamerClient 的 ConfigureAudioSession() 處理
+        // 啟用多點觸控
+        Input.multiTouchEnabled = true;
     }
 
     void SetAndroidSettings()
     {
         Application.targetFrameRate = 60;
         Screen.sleepTimeout = SleepTimeout.NeverSleep;
+        Input.multiTouchEnabled = true;
     }
 
     void SetWebGLSettings()
     {
         Application.targetFrameRate = 60;
-        // WebGL 不支援 Unity Microphone API
-        // AudioRecorder.cs 在 WebGL Build 時會自動停用（見其 Start() 邏輯）
+        // WebGL 用滑鼠模擬觸控，不需要額外設定
     }
 
     void SetPCSettings()
@@ -75,7 +76,47 @@ public class PlatformManager : MonoBehaviour
     }
 
     // ─────────────────────────────────────────
-    // 統一麥克風權限入口（由 UIManager 呼叫）
+    // 觸控 / 滑鼠雙棲：判斷輸入來源
+    // ─────────────────────────────────────────
+
+    /// <summary>
+    /// 本幀是否有點擊或觸控輸入
+    /// </summary>
+    public static bool IsPressed()
+    {
+#if UNITY_IOS || UNITY_ANDROID
+        return Input.touchCount > 0 &&
+               Input.GetTouch(0).phase == TouchPhase.Began;
+#else
+        return Input.GetMouseButtonDown(0);
+#endif
+    }
+
+    /// <summary>
+    /// 取得目前點擊 / 觸控位置
+    /// </summary>
+    public static Vector2 GetInputPosition()
+    {
+#if UNITY_IOS || UNITY_ANDROID
+        if (Input.touchCount > 0)
+            return Input.GetTouch(0).position;
+        return Vector2.zero;
+#else
+        return Input.mousePosition;
+#endif
+    }
+
+    /// <summary>
+    /// 是否點擊在 UI 上（避免穿透到 3D 場景）
+    /// </summary>
+    public static bool IsPointerOverUI()
+    {
+        return EventSystem.current != null &&
+               EventSystem.current.IsPointerOverGameObject();
+    }
+
+    // ─────────────────────────────────────────
+    // 麥克風權限
     // ─────────────────────────────────────────
     public void RequestMicrophonePermission(System.Action onGranted)
     {
@@ -92,25 +133,18 @@ public class PlatformManager : MonoBehaviour
             onGranted?.Invoke();
         }
 #elif UNITY_IOS && !UNITY_EDITOR
-        // iOS 由 Application.RequestUserAuthorization 處理（AudioRecorder 內已呼叫）
         onGranted?.Invoke();
 #elif UNITY_WEBGL && !UNITY_EDITOR
-        // WebGL 不支援麥克風，直接略過
-        Debug.LogWarning("🌐 WebGL 不支援麥克風語音輸入");
+        Debug.LogWarning("WebGL 不支援麥克風語音輸入");
 #else
-        // PC / Editor：直接允許
         onGranted?.Invoke();
 #endif
     }
 
-    // ─────────────────────────────────────────
-    // StreamerClient.StartMicInput() 呼叫此方法
-    // 路由到 AudioRecorder（iOS / Android）
-    // ─────────────────────────────────────────
     public void StartMicInput()
     {
 #if UNITY_WEBGL && !UNITY_EDITOR
-        Debug.LogWarning("🌐 WebGL 不支援語音輸入");
+        Debug.LogWarning("WebGL 不支援語音輸入");
         return;
 #endif
         if (_audioRecorder == null)
@@ -119,7 +153,7 @@ public class PlatformManager : MonoBehaviour
         if (_audioRecorder != null)
             _audioRecorder.OnMicButtonClickPublic();
         else
-            Debug.LogWarning("⚠ 找不到 AudioRecorder");
+            Debug.LogWarning("找不到 AudioRecorder");
     }
 
     // ─────────────────────────────────────────
@@ -131,7 +165,7 @@ public class PlatformManager : MonoBehaviour
                 UnityEngine.Android.Permission.Microphone))
             onGranted?.Invoke();
         else
-            Debug.LogWarning("⚠ 麥克風權限被拒絕");
+            Debug.LogWarning("麥克風權限被拒絕");
     }
 #endif
 }
