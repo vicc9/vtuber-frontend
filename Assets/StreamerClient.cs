@@ -1,7 +1,6 @@
 using UnityEngine;
 using UnityEngine.Networking;
 using NativeWebSocket;
-using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System.Collections;
 using System.Threading.Tasks;
@@ -49,17 +48,57 @@ public class StreamerClient : MonoBehaviour
             idleStateManager = FindAnyObjectByType<IdleStateManager>();
     }
 
+    // ─────────────────────────────────────────
+    // Start：有 AuthManager 時等它呼叫 ConnectWithToken
+    //        沒有時自動連線（向下相容）
+    // ─────────────────────────────────────────
     async void Start()
     {
 #if UNITY_IOS && !UNITY_EDITOR
-        // iOS：設定音訊 Session，允許錄音與播放同時進行
         ConfigureAudioSession();
 #endif
+        if (FindAnyObjectByType<AuthManager>() == null)
+        {
+            // 沒有 AuthManager，直接連線（開發模式）
+            await ConnectAsync("");
+        }
+        // 有 AuthManager 則等它取得 Token 後呼叫 ConnectWithToken()
+    }
 
-        websocket = new WebSocket("ws://localhost:8000/ws");
+    // ─────────────────────────────────────────
+    // 供 AuthManager 呼叫
+    // ─────────────────────────────────────────
+    public async void ConnectWithToken(string token)
+    {
+        await ConnectAsync(token);
+    }
+
+    // ─────────────────────────────────────────
+    // 核心連線邏輯
+    // ─────────────────────────────────────────
+    private async Task ConnectAsync(string token)
+    {
+        // ── 動態取得 host ──────────────────────────────────
+        string host = "localhost:8000";
+#if UNITY_WEBGL && !UNITY_EDITOR
+        string pageUrl  = Application.absoluteURL;
+        string withPort = pageUrl.Replace("https://", "")
+                                 .Replace("http://", "")
+                                 .Split('/')[0];
+        host = withPort;
+#endif
+
+        // ── WebSocket 網址（Token 帶在 Query String）────────
+        string wsUrl = string.IsNullOrEmpty(token)
+            ? $"ws://{host}/ws"
+            : $"ws://{host}/ws?token={token}";
+
+        Debug.Log($"[WS] 連線至: {wsUrl}");
+
+        websocket = new WebSocket(wsUrl);
         websocket.OnOpen  += () => Debug.Log("✅ 已成功連接至 AI 主播後端！");
         websocket.OnError += (e) => Debug.Log("❌ 連線錯誤: " + e);
-        websocket.OnClose += (c) => Debug.Log("🔌 連線已中斷。");
+        websocket.OnClose += (c) => Debug.Log($"🔌 連線已中斷，代碼: {c}");
 
         websocket.OnMessage += (bytes) =>
         {
@@ -81,7 +120,7 @@ public class StreamerClient : MonoBehaviour
 
         switch (type)
         {
-            // ── 正常對話 / Idle 自動搭話（共用同一 type）──
+            // ── 正常對話 / Idle 自動搭話 ──
             case "streamer_update":
             {
                 string dialogue = json["dialogue"]?.ToString();
@@ -91,29 +130,24 @@ public class StreamerClient : MonoBehaviour
                 bool   isIdle   = json["is_idle"]?.ToObject<bool>() ?? false;
                 string stage    = json["stage"]?.ToString() ?? "";
 
-                // 字幕 + 聊天室
                 _uiManager?.AddAIMessage(dialogue);
-
-                // 表情（立即切換，LateUpdate 平滑插值）
                 motionController?.PlayExpression(emotion);
 
-                // idle 特殊狀態處理
                 if (isIdle && idleStateManager != null)
                     idleStateManager.OnIdleResponse(stage, emotion, action);
 
-                // 下載音訊並播放（播放時觸發動作）
                 if (!string.IsNullOrEmpty(audioUrl))
                     StartCoroutine(DownloadAndPlay(audioUrl, action));
 
                 break;
             }
 
-            // ── STT 辨識結果：顯示使用者說了什麼 ──
+            // ── STT 辨識結果 ──
             case "stt_result":
             {
                 string text = json["text"]?.ToString();
                 if (!string.IsNullOrEmpty(text))
-                    _uiManager?.AddUserMessage($"🎙 {text}");
+                    _uiManager?.AddUserMessage($"[語音] {text}");
                 break;
             }
 
@@ -122,17 +156,25 @@ public class StreamerClient : MonoBehaviour
             {
                 string status = json["status"]?.ToString();
                 if (status == "recognizing")
-                    _uiManager?.ShowSystemMessage("🔄 辨識中…");
+                    _uiManager?.ShowSystemMessage("辨識中...");
                 else if (status == "failed")
                     _uiManager?.ShowSystemMessage(
                         json["message"]?.ToString() ?? "語音辨識失敗");
+                break;
+            }
+
+            // ── Token 被後端拒絕 ──
+            case "auth_error":
+            {
+                Debug.LogError("❌ 後端拒絕連線：Token 無效");
+                _uiManager?.ShowSystemMessage("連線驗證失敗，請重新啟動");
                 break;
             }
         }
     }
 
     // ─────────────────────────────────────────
-    // 下載音訊並播放（保留原有 HTTP 下載方式）
+    // 下載音訊並播放
     // ─────────────────────────────────────────
     IEnumerator DownloadAndPlay(string audioUrl, string action)
     {
@@ -150,7 +192,6 @@ public class StreamerClient : MonoBehaviour
                     audioSource.Play();
                     Debug.Log($"▶ 播放音訊，長度: {clip.length}s");
 
-                    // 動作在語音開始時觸發
                     if (!string.IsNullOrEmpty(action) && action != "無動作")
                         motionController?.PlayMotion(action);
                 }
@@ -163,7 +204,7 @@ public class StreamerClient : MonoBehaviour
     }
 
     // ─────────────────────────────────────────
-    // 傳送文字（由 UIManager / PlatformManager 呼叫）
+    // 傳送文字
     // ─────────────────────────────────────────
     public async void SendText(string text)
     {
@@ -174,16 +215,7 @@ public class StreamerClient : MonoBehaviour
     }
 
     // ─────────────────────────────────────────
-    // StartMicInput（由 UIManager 的麥克風按鈕呼叫，路由到 PlatformManager）
-    // ─────────────────────────────────────────
-    public void StartMicInput()
-    {
-        PlatformManager.Instance?.StartMicInput();
-    }
-
-    // ─────────────────────────────────────────
     // 傳送音訊 bytes（由 AudioRecorder 呼叫）
-    // iOS / Android 皆使用此方法
     // ─────────────────────────────────────────
     public async void SendAudioBytes(byte[] wavBytes)
     {
@@ -199,7 +231,15 @@ public class StreamerClient : MonoBehaviour
     }
 
     // ─────────────────────────────────────────
-    // LipSync（保留原有邏輯）
+    // StartMicInput（由 UIManager 呼叫）
+    // ─────────────────────────────────────────
+    public void StartMicInput()
+    {
+        PlatformManager.Instance?.StartMicInput();
+    }
+
+    // ─────────────────────────────────────────
+    // LipSync
     // ─────────────────────────────────────────
     void LateUpdate()
     {
@@ -209,8 +249,8 @@ public class StreamerClient : MonoBehaviour
 
         if (audioSource.isPlaying && audioSource.clip != null)
         {
-            float[] samples     = new float[256];
-            int     channels    = audioSource.clip.channels;
+            float[] samples      = new float[256];
+            int     channels     = audioSource.clip.channels;
             int     sampleOffset = audioSource.timeSamples * channels;
             int     totalSamples = audioSource.clip.samples  * channels;
 
@@ -228,17 +268,17 @@ public class StreamerClient : MonoBehaviour
     }
 
     // ─────────────────────────────────────────
-    // Update：DispatchMessageQueue（WebGL 以外需要手動 Dispatch）
+    // Update：WebGL 以外需要手動 Dispatch
     // ─────────────────────────────────────────
     void Update()
     {
 #if !UNITY_WEBGL || UNITY_EDITOR
-        websocket.DispatchMessageQueue();
+        websocket?.DispatchMessageQueue();
 #endif
     }
 
     // ─────────────────────────────────────────
-    // iOS Native Plugin：設定 AVAudioSession
+    // iOS AVAudioSession
     // ─────────────────────────────────────────
 #if UNITY_IOS && !UNITY_EDITOR
     [System.Runtime.InteropServices.DllImport("__Internal")]
@@ -246,7 +286,7 @@ public class StreamerClient : MonoBehaviour
 #else
     static void ConfigureAudioSession()
     {
-        Debug.Log("[AudioSession] 非 iOS 平台，略過設定");
+        Debug.Log("[AudioSession] 非 iOS 平台，略過");
     }
 #endif
 

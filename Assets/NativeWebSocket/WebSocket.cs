@@ -1,3 +1,5 @@
+#if !UNITY_WEBGL || UNITY_EDITOR
+
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -186,16 +188,9 @@ namespace NativeWebSocket
             m_DispatchQueue.Clear();
         }
 
-        /// <summary>
-        /// Dispatches queued events when no SynchronizationContext is available.
-        /// Not needed when a SynchronizationContext is present (Unity, Godot, MonoGame with WebSocketGameComponent).
-        /// </summary>
         public void DispatchMessageQueue()
         {
-            // Hot path: dispatch messages without closure overhead
             DispatchQueuedMessages();
-
-            // Rare events: OnOpen, OnError, OnClose
             DispatchQueuedEvents();
         }
 
@@ -400,7 +395,6 @@ namespace NativeWebSocket
 #else
         private Task SendAndDrainAsync(Queue<ArraySegment<byte>> queue, WebSocketMessageType messageType, ArraySegment<byte> buffer)
         {
-            // Try synchronous fast path: avoid async state machine when SendAsync completes inline
             var sendTask = m_Socket.SendAsync(buffer, messageType, true, m_CancellationToken);
             if (sendTask.Status == TaskStatus.RanToCompletion)
             {
@@ -429,7 +423,6 @@ namespace NativeWebSocket
                 var sendTask = m_Socket.SendAsync(next, messageType, true, m_CancellationToken);
                 if (sendTask.Status != TaskStatus.RanToCompletion)
                 {
-                    // This send went async — fall through to async drain
                     return AwaitAndDrainAsync(sendTask, queue, messageType);
                 }
             }
@@ -484,14 +477,12 @@ namespace NativeWebSocket
 
                     if (result.EndOfMessage)
                     {
-                        // Fast path: single-frame message, avoid MemoryStream
                         var data = new byte[result.Count];
                         Buffer.BlockCopy(buffer.Array, buffer.Offset, data, 0, result.Count);
                         EnqueueMessage(data);
                     }
                     else
                     {
-                        // Multi-frame message: accumulate in MemoryStream
                         using (var ms = new MemoryStream())
                         {
                             ms.Write(buffer.Array, buffer.Offset, result.Count);
@@ -528,19 +519,13 @@ namespace NativeWebSocket
         }
     }
 
-    /// <summary>
-    /// Factory for creating WebSocket instances.
-    /// </summary>
     public static class WebSocketFactory
     {
-        /// <summary>
-        /// Create WebSocket client instance
-        /// </summary>
-        /// <returns>The WebSocket instance.</returns>
-        /// <param name="url">WebSocket valid URL.</param>
         public static WebSocket CreateInstance(string url)
         {
             return new WebSocket(url);
         }
     }
 }
+
+#endif // !UNITY_WEBGL || UNITY_EDITOR
