@@ -11,6 +11,12 @@ public class IMEBridge : MonoBehaviour
 
     void Awake()
     {
+         // 確保這是唯一的 Instance
+        if (Instance != null && Instance != this)
+    {
+        Destroy(gameObject);
+        return;
+    }
         Instance        = this;
         gameObject.name = "IMEBridge";
         DontDestroyOnLoad(gameObject);

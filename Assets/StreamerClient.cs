@@ -25,7 +25,6 @@ public class StreamerClient : MonoBehaviour
 
     private UIManager _uiManager;
 
-    // ─────────────────────────────────────────
     void Awake()
     {
         _uiManager = FindAnyObjectByType<UIManager>();
@@ -38,7 +37,7 @@ public class StreamerClient : MonoBehaviour
         {
             _mouthOpenY = cubismModel.Parameters.FindById("ParamMouthOpenY");
             if (_mouthOpenY == null)
-                Debug.LogError("❌ 找不到參數 ParamMouthOpenY！");
+                Debug.LogError("找不到參數 ParamMouthOpenY");
         }
 
         if (motionController == null)
@@ -48,37 +47,22 @@ public class StreamerClient : MonoBehaviour
             idleStateManager = FindAnyObjectByType<IdleStateManager>();
     }
 
-    // ─────────────────────────────────────────
-    // Start：有 AuthManager 時等它呼叫 ConnectWithToken
-    //        沒有時自動連線（向下相容）
-    // ─────────────────────────────────────────
     async void Start()
     {
 #if UNITY_IOS && !UNITY_EDITOR
         ConfigureAudioSession();
 #endif
         if (FindAnyObjectByType<AuthManager>() == null)
-        {
-            // 沒有 AuthManager，直接連線（開發模式）
             await ConnectAsync("");
-        }
-        // 有 AuthManager 則等它取得 Token 後呼叫 ConnectWithToken()
     }
 
-    // ─────────────────────────────────────────
-    // 供 AuthManager 呼叫
-    // ─────────────────────────────────────────
     public async void ConnectWithToken(string token)
     {
         await ConnectAsync(token);
     }
 
-    // ─────────────────────────────────────────
-    // 核心連線邏輯
-    // ─────────────────────────────────────────
     private async Task ConnectAsync(string token)
     {
-        // ── 動態取得 host ──────────────────────────────────
         string host = "localhost:8000";
 #if UNITY_WEBGL && !UNITY_EDITOR
         string pageUrl  = Application.absoluteURL;
@@ -87,8 +71,6 @@ public class StreamerClient : MonoBehaviour
                                  .Split('/')[0];
         host = withPort;
 #endif
-
-        // ── WebSocket 網址（Token 帶在 Query String）────────
         string wsUrl = string.IsNullOrEmpty(token)
             ? $"ws://{host}/ws"
             : $"ws://{host}/ws?token={token}";
@@ -96,23 +78,20 @@ public class StreamerClient : MonoBehaviour
         Debug.Log($"[WS] 連線至: {wsUrl}");
 
         websocket = new WebSocket(wsUrl);
-        websocket.OnOpen  += () => Debug.Log("✅ 已成功連接至 AI 主播後端！");
-        websocket.OnError += (e) => Debug.Log("❌ 連線錯誤: " + e);
-        websocket.OnClose += (c) => Debug.Log($"🔌 連線已中斷，代碼: {c}");
+        websocket.OnOpen  += () => Debug.Log("已成功連接至 AI 主播後端！");
+        websocket.OnError += (e) => Debug.Log("連線錯誤: " + e);
+        websocket.OnClose += (c) => Debug.Log($"連線已中斷，代碼: {c}");
 
         websocket.OnMessage += (bytes) =>
         {
             var message = System.Text.Encoding.UTF8.GetString(bytes);
-            Debug.Log("📦 收到後端包裹: " + message);
+            Debug.Log("收到後端包裹: " + message);
             HandleTextMessage(message);
         };
 
         await websocket.Connect();
     }
 
-    // ─────────────────────────────────────────
-    // 解析 JSON 訊息
-    // ─────────────────────────────────────────
     void HandleTextMessage(string raw)
     {
         var json = JObject.Parse(raw);
@@ -120,7 +99,6 @@ public class StreamerClient : MonoBehaviour
 
         switch (type)
         {
-            // ── 正常對話 / Idle 自動搭話 ──
             case "streamer_update":
             {
                 string dialogue = json["dialogue"]?.ToString();
@@ -141,8 +119,6 @@ public class StreamerClient : MonoBehaviour
 
                 break;
             }
-
-            // ── STT 辨識結果 ──
             case "stt_result":
             {
                 string text = json["text"]?.ToString();
@@ -150,8 +126,6 @@ public class StreamerClient : MonoBehaviour
                     _uiManager?.AddUserMessage($"[語音] {text}");
                 break;
             }
-
-            // ── STT 狀態通知 ──
             case "stt_status":
             {
                 string status = json["status"]?.ToString();
@@ -162,11 +136,9 @@ public class StreamerClient : MonoBehaviour
                         json["message"]?.ToString() ?? "語音辨識失敗");
                 break;
             }
-
-            // ── Token 被後端拒絕 ──
             case "auth_error":
             {
-                Debug.LogError("❌ 後端拒絕連線：Token 無效");
+                Debug.LogError("後端拒絕連線：Token 無效");
                 _uiManager?.ShowSystemMessage("連線驗證失敗，請重新啟動");
                 break;
             }
@@ -175,9 +147,42 @@ public class StreamerClient : MonoBehaviour
 
     // ─────────────────────────────────────────
     // 下載音訊並播放
+    // WebGL 不支援 streamAudio=false，改用 byte[] 轉 AudioClip
     // ─────────────────────────────────────────
     IEnumerator DownloadAndPlay(string audioUrl, string action)
     {
+#if UNITY_WEBGL && !UNITY_EDITOR
+        // WebGL：下載 bytes 後手動解析 WAV
+        using (UnityWebRequest www = UnityWebRequest.Get(audioUrl))
+        {
+            yield return www.SendWebRequest();
+
+            if (www.result == UnityWebRequest.Result.Success)
+            {
+                byte[] wavBytes = www.downloadHandler.data;
+                AudioClip clip  = WavToAudioClip(wavBytes);
+
+                if (clip != null)
+                {
+                    audioSource.clip = clip;
+                    audioSource.Play();
+                    Debug.Log($"播放音訊（WebGL），長度: {clip.length}s");
+
+                    if (!string.IsNullOrEmpty(action) && action != "無動作")
+                        motionController?.PlayMotion(action);
+                }
+                else
+                {
+                    Debug.LogWarning("WAV 解析失敗");
+                }
+            }
+            else
+            {
+                Debug.LogError("音訊下載失敗: " + www.error);
+            }
+        }
+#else
+        // iOS / Android / PC：用 Unity 原生音訊載入
         using (UnityWebRequest www =
                UnityWebRequestMultimedia.GetAudioClip(audioUrl, AudioType.WAV))
         {
@@ -186,61 +191,104 @@ public class StreamerClient : MonoBehaviour
             if (www.result == UnityWebRequest.Result.Success)
             {
                 AudioClip clip = DownloadHandlerAudioClip.GetContent(www);
-                if (clip != null && clip.loadState == AudioDataLoadState.Loaded)
+
+                float waitTime = 0f;
+                while (clip.loadState == AudioDataLoadState.Loading && waitTime < 5f)
+                {
+                    yield return new WaitForSeconds(0.05f);
+                    waitTime += 0.05f;
+                }
+
+                if (clip.loadState == AudioDataLoadState.Loaded)
                 {
                     audioSource.clip = clip;
                     audioSource.Play();
-                    Debug.Log($"▶ 播放音訊，長度: {clip.length}s");
+                    Debug.Log($"播放音訊，長度: {clip.length}s");
 
                     if (!string.IsNullOrEmpty(action) && action != "無動作")
                         motionController?.PlayMotion(action);
                 }
+                else
+                {
+                    Debug.LogWarning($"音訊載入超時，狀態: {clip.loadState}");
+                }
             }
             else
             {
-                Debug.LogError("❌ 音訊下載失敗: " + www.error);
+                Debug.LogError("音訊下載失敗: " + www.error);
             }
         }
+#endif
     }
 
     // ─────────────────────────────────────────
-    // 傳送文字
+    // WAV bytes → AudioClip（WebGL 專用）
+    // 支援 16bit PCM WAV
     // ─────────────────────────────────────────
+    AudioClip WavToAudioClip(byte[] wav)
+    {
+        try
+        {
+            int channels   = System.BitConverter.ToInt16(wav, 22);
+            int sampleRate = System.BitConverter.ToInt32(wav, 24);
+
+            // 找 data chunk（跳過可能的額外 chunk）
+            int dataOffset = 12;
+            while (dataOffset < wav.Length - 8)
+            {
+                string chunkId = System.Text.Encoding.ASCII.GetString(wav, dataOffset, 4);
+                int    chunkSize = System.BitConverter.ToInt32(wav, dataOffset + 4);
+                if (chunkId == "data") { dataOffset += 8; break; }
+                dataOffset += 8 + chunkSize;
+            }
+
+            int sampleCount = (wav.Length - dataOffset) / 2;
+            float[] samples = new float[sampleCount];
+
+            for (int i = 0; i < sampleCount; i++)
+            {
+                short s = System.BitConverter.ToInt16(wav, dataOffset + i * 2);
+                samples[i] = s / 32768f;
+            }
+
+            AudioClip clip = AudioClip.Create("wav", sampleCount / channels,
+                                              channels, sampleRate, false);
+            clip.SetData(samples, 0);
+            return clip;
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"WAV 解析失敗: {e.Message}");
+            return null;
+        }
+    }
+
     public async void SendText(string text)
     {
         if (websocket != null && websocket.State == WebSocketState.Open)
             await websocket.SendText(text);
         else
-            Debug.LogWarning("⚠ WebSocket 未連線，無法發送文字");
+            Debug.LogWarning("WebSocket 未連線，無法發送文字");
     }
 
-    // ─────────────────────────────────────────
-    // 傳送音訊 bytes（由 AudioRecorder 呼叫）
-    // ─────────────────────────────────────────
     public async void SendAudioBytes(byte[] wavBytes)
     {
         if (websocket != null && websocket.State == WebSocketState.Open)
         {
             await websocket.Send(wavBytes);
-            Debug.Log($"🎤 已傳送音訊，大小: {wavBytes.Length} bytes");
+            Debug.Log($"已傳送音訊，大小: {wavBytes.Length} bytes");
         }
         else
         {
-            Debug.LogWarning("⚠ WebSocket 未連線，無法傳送音訊");
+            Debug.LogWarning("WebSocket 未連線，無法傳送音訊");
         }
     }
 
-    // ─────────────────────────────────────────
-    // StartMicInput（由 UIManager 呼叫）
-    // ─────────────────────────────────────────
     public void StartMicInput()
     {
         PlatformManager.Instance?.StartMicInput();
     }
 
-    // ─────────────────────────────────────────
-    // LipSync
-    // ─────────────────────────────────────────
     void LateUpdate()
     {
         if (_mouthOpenY == null) return;
@@ -267,9 +315,6 @@ public class StreamerClient : MonoBehaviour
         _mouthOpenY.Value = volume;
     }
 
-    // ─────────────────────────────────────────
-    // Update：WebGL 以外需要手動 Dispatch
-    // ─────────────────────────────────────────
     void Update()
     {
 #if !UNITY_WEBGL || UNITY_EDITOR
@@ -277,9 +322,6 @@ public class StreamerClient : MonoBehaviour
 #endif
     }
 
-    // ─────────────────────────────────────────
-    // iOS AVAudioSession
-    // ─────────────────────────────────────────
 #if UNITY_IOS && !UNITY_EDITOR
     [System.Runtime.InteropServices.DllImport("__Internal")]
     static extern void ConfigureAudioSession();
@@ -290,7 +332,6 @@ public class StreamerClient : MonoBehaviour
     }
 #endif
 
-    // ─────────────────────────────────────────
     private async void OnApplicationQuit()
     {
         if (websocket != null)
