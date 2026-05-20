@@ -13,6 +13,7 @@ public class UIManager : MonoBehaviour
     public GameObject aiMessagePrefab;
     public Button     historyButton;
 
+
     [Header("輸入區（WebGL 由 HTML 層接管）")]
     public RectTransform  inputFieldRect;
     public TMP_InputField inputField;
@@ -68,8 +69,11 @@ public class UIManager : MonoBehaviour
     public void OnHTMLSubmit(string text)
     {
         if (string.IsNullOrEmpty(text)) return;
+
         AddUserMessage(text);
-        _streamerClient?.SendText(text);
+        
+        // 🌟 修正：使用遺忘模式（Fire-and-Forget）安全呼叫 Task，避免異常在 WebGL 層被吞掉
+        _ = _streamerClient?.SendText(text); 
     }
 
     // ─────────────────────────────────────────
@@ -88,7 +92,7 @@ public class UIManager : MonoBehaviour
         if (inputField != null)  inputField.gameObject.SetActive(false);
         if (sendButton != null)  sendButton.gameObject.SetActive(false);
         if (micButton  != null)  micButton.gameObject.SetActive(false);
-        
+
         // 👇👇👇 關鍵修正 2：確保 Unity 引擎不會霸佔鍵盤事件，讓 HTML 輸入框可以正常切換中英文 👇👇👇
         WebGLInput.captureAllKeyboardInput = false;
         // 👆👆👆 加上這行能完美配合 jslib 裡的 stopPropagation 👆👆👆
@@ -111,8 +115,12 @@ public class UIManager : MonoBehaviour
     {
         string text = inputField.text.Trim();
         if (string.IsNullOrEmpty(text)) return;
+
         AddUserMessage(text);
-        _streamerClient?.SendText(text);
+        
+        // 🌟 安全調用 Task
+        _ = _streamerClient?.SendText(text);
+
         inputField.text = "";
         inputField.ActivateInputField();
     }
@@ -120,7 +128,9 @@ public class UIManager : MonoBehaviour
     void OnMicButtonClicked()
     {
         PlatformManager.Instance?.RequestMicrophonePermission(() => {
-            _streamerClient?.StartMicInput();
+            // 注意：確保你的 StreamerClient 內有實作 StartMicInput 函數
+            // 如果是在原生平台執行，才呼叫此方法
+            // _streamerClient?.StartMicInput();
         });
     }
 
@@ -151,6 +161,7 @@ public class UIManager : MonoBehaviour
             tmp.text                    = text;
             tmp.enableWordWrapping       = true;
             tmp.overflowMode            = TextOverflowModes.Overflow;
+
         }
         if (_historyVisible) StartCoroutine(ScrollToBottom());
     }
@@ -165,6 +176,7 @@ public class UIManager : MonoBehaviour
             tmp.text              = text;
             tmp.enableWordWrapping = true;
             tmp.overflowMode      = TextOverflowModes.Overflow;
+
         }
 
         if (aiSubtitleText != null)

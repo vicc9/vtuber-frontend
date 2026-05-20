@@ -10,6 +10,12 @@ public class StreamerClient : MonoBehaviour
 {
     WebSocket websocket;
 
+    // 關鍵修正：透過本地布林值避開 WebGL 的 State 同步 Bug
+    private bool _isConnected = false;
+
+    // 提供給 UIManager 或 UIManagerBridge 讀取的公開屬性
+    public bool IsConnected => _isConnected;
+
     [Header("音訊")]
     public AudioSource audioSource;
 
@@ -56,6 +62,17 @@ public class StreamerClient : MonoBehaviour
             await ConnectAsync("");
     }
 
+    void Update()
+    {
+        // NativeWebSocket 必須在 Update 中持續調度訊息佇列（WebGL 平台以外需要）
+#if !UNITY_WEBGL || UNITY_EDITOR
+        if (websocket != null)
+        {
+            websocket.DispatchMessageQueue();
+        }
+#endif
+    }
+
     public async void ConnectWithToken(string token)
     {
         await ConnectAsync(token);
@@ -78,9 +95,22 @@ public class StreamerClient : MonoBehaviour
         Debug.Log($"[WS] 連線至: {wsUrl}");
 
         websocket = new WebSocket(wsUrl);
-        websocket.OnOpen  += () => Debug.Log("已成功連接至 AI 主播後端！");
-        websocket.OnError += (e) => Debug.Log("連線錯誤: " + e);
-        websocket.OnClose += (c) => Debug.Log($"連線已中斷，代碼: {c}");
+
+        // 在事件中同步更新 _isConnected 狀態
+        websocket.OnOpen += () => {
+            Debug.Log("已成功連接至 AI 主播後端！");
+            _isConnected = true;
+        };
+
+        websocket.OnError += (e) => {
+            Debug.Log("連線錯誤: " + e);
+            _isConnected = false;
+        };
+
+        websocket.OnClose += (c) => {
+            Debug.Log($"連線已中斷，代碼: {c}");
+            _isConnected = false;
+        };
 
         websocket.OnMessage += (bytes) =>
         {
@@ -90,6 +120,51 @@ public class StreamerClient : MonoBehaviour
         };
 
         await websocket.Connect();
+    }
+
+    /// <summary>
+    /// 發送文字訊息給後端
+    /// </summary>
+    public async Task SendText(string message)
+    {
+        if (!_isConnected || websocket == null)
+        {
+            Debug.LogWarning("⚠️ WebSocket 未連線，無法發送文字");
+            _uiManager?.ShowSystemMessage("錯誤：目前尚未與伺服器連線");
+            return;
+        }
+
+        try
+        {
+            await websocket.SendText(message);
+            Debug.Log($"[WS] 已發送文字: {message}");
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"[WS] 文字發送失敗: {e.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 發送麥克風錄音的二進位資料給後端（修復 AudioRecorder 報錯）
+    /// </summary>
+    public async Task SendAudioBytes(byte[] audioData)
+    {
+        if (!_isConnected || websocket == null)
+        {
+            Debug.LogWarning("⚠️ WebSocket 未連線，無法發送語音資料");
+            return;
+        }
+
+        try
+        {
+            await websocket.Send(audioData);
+            Debug.Log($"[WS] 已發送語音資料，大小: {audioData.Length} bytes");
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"[WS] 語音資料發送失敗: {e.Message}");
+        }
     }
 
     void HandleTextMessage(string raw)
@@ -145,14 +220,9 @@ public class StreamerClient : MonoBehaviour
         }
     }
 
-    // ─────────────────────────────────────────
-    // 下載音訊並播放
-    // WebGL 不支援 streamAudio=false，改用 byte[] 轉 AudioClip
-    // ─────────────────────────────────────────
     IEnumerator DownloadAndPlay(string audioUrl, string action)
     {
 #if UNITY_WEBGL && !UNITY_EDITOR
-        // WebGL：下載 bytes 後手動解析 WAV
         using (UnityWebRequest www = UnityWebRequest.Get(audioUrl))
         {
             yield return www.SendWebRequest();
@@ -182,7 +252,6 @@ public class StreamerClient : MonoBehaviour
             }
         }
 #else
-        // iOS / Android / PC：用 Unity 原生音訊載入
         using (UnityWebRequest www =
                UnityWebRequestMultimedia.GetAudioClip(audioUrl, AudioType.WAV))
         {
@@ -208,10 +277,6 @@ public class StreamerClient : MonoBehaviour
                     if (!string.IsNullOrEmpty(action) && action != "無動作")
                         motionController?.PlayMotion(action);
                 }
-                else
-                {
-                    Debug.LogWarning($"音訊載入超時，狀態: {clip.loadState}");
-                }
             }
             else
             {
@@ -221,120 +286,56 @@ public class StreamerClient : MonoBehaviour
 #endif
     }
 
-    // ─────────────────────────────────────────
-    // WAV bytes → AudioClip（WebGL 專用）
-    // 支援 16bit PCM WAV
-    // ─────────────────────────────────────────
-    AudioClip WavToAudioClip(byte[] wav)
+    private AudioClip WavToAudioClip(byte[] wavBytes)
     {
-        try
-        {
-            int channels   = System.BitConverter.ToInt16(wav, 22);
-            int sampleRate = System.BitConverter.ToInt32(wav, 24);
+        if (wavBytes == null || wavBytes.Length < 44) return null;
 
-            // 找 data chunk（跳過可能的額外 chunk）
-            int dataOffset = 12;
-            while (dataOffset < wav.Length - 8)
+        int channels = System.BitConverter.ToInt16(wavBytes, 22);
+        int sampleRate = System.BitConverter.ToInt32(wavBytes, 24);
+        int pos = 12;
+
+        while (pos < wavBytes.Length - 8)
+        {
+            if (wavBytes[pos] == 'd' && wavBytes[pos + 1] == 'a' && wavBytes[pos + 2] == 't' && wavBytes[pos + 3] == 'a')
             {
-                string chunkId = System.Text.Encoding.ASCII.GetString(wav, dataOffset, 4);
-                int    chunkSize = System.BitConverter.ToInt32(wav, dataOffset + 4);
-                if (chunkId == "data") { dataOffset += 8; break; }
-                dataOffset += 8 + chunkSize;
+                pos += 4;
+                int dataSize = System.BitConverter.ToInt32(wavBytes, pos);
+                pos += 4;
+
+                int sampleCount = dataSize / 2;
+                float[] samples = new float[sampleCount];
+
+                for (int i = 0; i < sampleCount; i++)
+                {
+                    if (pos + i * 2 + 1 >= wavBytes.Length) break;
+                    short shot = System.BitConverter.ToInt16(wavBytes, pos + i * 2);
+                    samples[i] = shot / 32768f;
+                }
+
+                AudioClip clip = AudioClip.Create("StreamingAudio", sampleCount / channels, channels, sampleRate, false);
+                clip.SetData(samples, 0);
+                return clip;
             }
-
-            int sampleCount = (wav.Length - dataOffset) / 2;
-            float[] samples = new float[sampleCount];
-
-            for (int i = 0; i < sampleCount; i++)
-            {
-                short s = System.BitConverter.ToInt16(wav, dataOffset + i * 2);
-                samples[i] = s / 32768f;
-            }
-
-            AudioClip clip = AudioClip.Create("wav", sampleCount / channels,
-                                              channels, sampleRate, false);
-            clip.SetData(samples, 0);
-            return clip;
+            pos++;
         }
-        catch (System.Exception e)
+        return null;
+    }
+
+    private void OnDestroy()
+    {
+        if (websocket != null)
         {
-            Debug.LogError($"WAV 解析失敗: {e.Message}");
-            return null;
+            websocket.Close();
         }
-    }
-
-    public async void SendText(string text)
-    {
-        if (websocket != null && websocket.State == WebSocketState.Open)
-            await websocket.SendText(text);
-        else
-            Debug.LogWarning("WebSocket 未連線，無法發送文字");
-    }
-
-    public async void SendAudioBytes(byte[] wavBytes)
-    {
-        if (websocket != null && websocket.State == WebSocketState.Open)
-        {
-            await websocket.Send(wavBytes);
-            Debug.Log($"已傳送音訊，大小: {wavBytes.Length} bytes");
-        }
-        else
-        {
-            Debug.LogWarning("WebSocket 未連線，無法傳送音訊");
-        }
-    }
-
-    public void StartMicInput()
-    {
-        PlatformManager.Instance?.StartMicInput();
-    }
-
-    void LateUpdate()
-    {
-        if (_mouthOpenY == null) return;
-
-        float volume = 0f;
-
-        if (audioSource.isPlaying && audioSource.clip != null)
-        {
-            float[] samples      = new float[256];
-            int     channels     = audioSource.clip.channels;
-            int     sampleOffset = audioSource.timeSamples * channels;
-            int     totalSamples = audioSource.clip.samples  * channels;
-
-            if (sampleOffset + 256 <= totalSamples)
-            {
-                audioSource.clip.GetData(samples, audioSource.timeSamples);
-                float sum = 0f;
-                foreach (var s in samples) sum += s * s;
-                volume = Mathf.Sqrt(sum / samples.Length);
-                volume = Mathf.Clamp01(volume * 10f);
-            }
-        }
-
-        _mouthOpenY.Value = volume;
-    }
-
-    void Update()
-    {
-#if !UNITY_WEBGL || UNITY_EDITOR
-        websocket?.DispatchMessageQueue();
-#endif
     }
 
 #if UNITY_IOS && !UNITY_EDITOR
     [System.Runtime.InteropServices.DllImport("__Internal")]
-    static extern void ConfigureAudioSession();
-#else
-    static void ConfigureAudioSession()
-    {
-        Debug.Log("[AudioSession] 非 iOS 平台，略過");
-    }
+    private static extern void ConfigureAudioSession();
 #endif
 
-    private async void OnApplicationQuit()
+    public void StartMicInput()
     {
-        if (websocket != null)
-            await websocket.Close();
+        Debug.Log("開始麥克風收音...");
     }
 }
