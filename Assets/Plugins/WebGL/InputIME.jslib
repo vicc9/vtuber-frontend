@@ -37,12 +37,14 @@ mergeInto(LibraryManager.library, {
     var micBtn = document.createElement('button');
     micBtn.id          = 'unity-mic-btn';
     micBtn.textContent = '\u8a9e\u97f3'; // 語音
+    
+    // 🌟 修正 1：將原本灰色不可點擊的樣式，改成可點擊的綠色按鈕外觀
     micBtn.style.cssText = [
       'position: fixed', 'bottom: 0', 'right: 0',
       'width: 72px', 'height: 52px', 'font-size: 16px',
-      'background: #666', 'color: #ccc', 'border: none',
-      'border-top: 2px solid #333', 'cursor: not-allowed',
-      'z-index: 99999',
+      'font-weight: bold', 'background: #27AE60', 'color: white', 
+      'border: none', 'border-top: 2px solid #333', 
+      'cursor: pointer', 'z-index: 99999',
     ].join(';');
     document.body.appendChild(micBtn);
 
@@ -50,7 +52,6 @@ mergeInto(LibraryManager.library, {
       var val = input.value.trim();
       if (!val) return;
       
-      // 改用 window.unityInstance 確保能抓到
       if (typeof window.unityInstance !== 'undefined') {
         window.unityInstance.SendMessage('UIManagerBridge', 'OnHTMLSubmit', val);
       } else {
@@ -67,7 +68,6 @@ mergeInto(LibraryManager.library, {
       }
     });
 
-    // 關鍵修正：阻止 Unity 偷走鍵盤事件，讓英文跟數字可以正常輸入
     var stopPropagation = function(e) { e.stopPropagation(); };
     input.addEventListener('keydown', function(e) {
       e.stopPropagation(); 
@@ -83,12 +83,18 @@ mergeInto(LibraryManager.library, {
       submitInput();
     });
 
+    // 🌟 修正 2：解鎖語音按鈕！點擊時直接觸發 Unity 內的 AudioRecorderObject
     micBtn.addEventListener('click', function() {
-      alert('\u7db2\u9801\u7248\u4e0d\u652f\u63f4\u8a9e\u97f3\u8f38\u5165\n\u8acb\u4f7f\u7528 iOS \u6216 Android App');
+      if (typeof window.unityInstance !== 'undefined') {
+        // 呼叫我們在 AudioRecorder.cs 設定的 WebGL 公開點擊方法
+        window.unityInstance.SendMessage('AudioRecorderObject', 'OnMicButtonClickPublic');
+      } else {
+        console.error("[IME Error] 找不到 window.unityInstance，無法觸發錄音！");
+      }
     });
     
     setTimeout(function() { input.focus(); }, 500);
-    console.log('[IME] \u6301\u4e45\u8f38\u5165\u6846\u5df2\u5efa\u7acb');
+    console.log('[IME] 持久輸入框與語音按鈕已成功建立並綁定');
   },
 
   ClearNativeInput: function() {
@@ -97,5 +103,19 @@ mergeInto(LibraryManager.library, {
   },
 
   ShowNativeInput: function(x, y, width, height, defaultTextPtr) {},
-  HideNativeInput: function() {}
+  HideNativeInput: function() {},
+
+  // 🌟 修正 3：補上本次打包遺漏的關鍵函數（注意前方的逗號隔開）
+  // 讓 Unity 收到 STT (語音轉文字) 結果時，能把文字塞回這個網頁輸入框中
+  SetWebGLInputValue: function(strPtr) {
+    var text = UTF8ToString(strPtr);
+    var input = document.getElementById('unity-ime-input');
+    if (input) {
+      input.value = text;
+      
+      // 觸發原生 input 事件，確保如果有其他網頁組件在監聽能同步更新
+      var event = new Event('input', { bubbles: true });
+      input.dispatchEvent(event);
+    }
+  }
 });

@@ -1,6 +1,6 @@
 // Assets/Scripts/AudioRecorder.cs
 // 支援平台：iOS、Android
-// WebGL：Microphone API 不存在，整個錄音功能在編譯時排除
+// WebGL：透過 WebGLMic.jslib 呼叫瀏覽器 MediaRecorder API 錄音
 
 using System;
 using System.Collections;
@@ -10,8 +10,8 @@ using UnityEngine.UI;
 public class AudioRecorder : MonoBehaviour
 {
     [Header("References")]
-    public Button         micButton;
-    public UIManager      uiManager;
+    public Button      micButton;
+    public UIManager   uiManager;
     public StreamerClient streamerClient;
 
     [Header("Settings")]
@@ -21,7 +21,7 @@ public class AudioRecorder : MonoBehaviour
     public Color idleColor        = Color.white;
 
 // ═══════════════════════════════════════════════════════════
-// WebGL 以外的平台才編譯以下程式碼
+// WebGL 以外的平台才編譯以下程式碼 (iOS, Android, Editor)
 // ═══════════════════════════════════════════════════════════
 #if !UNITY_WEBGL || UNITY_EDITOR
 
@@ -71,7 +71,7 @@ public class AudioRecorder : MonoBehaviour
         _recordStartTime = Time.time;
         SetButtonColor(recordingColor);
         uiManager.ShowSystemMessage("● 錄音中…點擊停止");
-        Debug.Log("[AudioRecorder] 開始錄音");
+        Debug.Log("[AudioRecorder] 開始原生錄音");
     }
 
     void StopRecordingAndSend()
@@ -90,7 +90,7 @@ public class AudioRecorder : MonoBehaviour
             return;
         }
 
-        Debug.Log($"[AudioRecorder] 停止，時長={duration:F1}s，樣本={micPos}");
+        Debug.Log($"[AudioRecorder] 停止原生錄音，時長={duration:F1}s，樣本={micPos}");
 
         AudioClip trimmed  = TrimClip(_recordingClip, micPos);
         byte[]    wavBytes = AudioClipToWav(trimmed);
@@ -144,12 +144,6 @@ public class AudioRecorder : MonoBehaviour
         return wav;
     }
 
-    void SetButtonColor(Color c)
-    {
-        var img = micButton.GetComponent<Image>();
-        if (img != null) img.color = c;
-    }
-
     void Update()
     {
         if (_isRecording && Time.time - _recordStartTime >= maxRecordSeconds)
@@ -161,17 +155,116 @@ public class AudioRecorder : MonoBehaviour
 
 #else
 // ═══════════════════════════════════════════════════════════
-// WebGL：空實作，讓編譯通過，執行時隱藏麥克風按鈕
+// WebGL 平台編譯此區塊：透過前端 JavaScript 橋接器錄音
 // ═══════════════════════════════════════════════════════════
+
+#if UNITY_WEBGL && !UNITY_EDITOR
+    [System.Runtime.InteropServices.DllImport("__Internal")]
+    private static extern void StartWebGLMic();
+
+    [System.Runtime.InteropServices.DllImport("__Internal")]
+    private static extern void StopWebGLMic();
+#endif
+
+    private bool  _isRecording       = false;
+    private float _recordStartTime;
+    private float _lastRecordDuration;
 
     void Start()
     {
         if (micButton != null)
-            micButton.gameObject.SetActive(false);
-        Debug.Log("[AudioRecorder] WebGL 平台，麥克風功能已停用");
+        {
+            micButton.onClick.AddListener(OnMicButtonClick);
+        }
+        Debug.Log("[AudioRecorder] WebGL 模式已啟動，準備透過瀏覽器進行語音輸入");
     }
 
-    public void OnMicButtonClickPublic() { }
+    public void OnMicButtonClickPublic() => OnMicButtonClick();
+
+    void OnMicButtonClick()
+    {
+        if (!_isRecording) StartWebGLRecording();
+        else               StopWebGLRecording();
+    }
+
+    void StartWebGLRecording()
+    {
+#if UNITY_WEBGL && !UNITY_EDITOR
+        StartWebGLMic();
+#endif
+        _isRecording = true;
+        _recordStartTime = Time.time;
+        SetButtonColor(recordingColor);
+        uiManager.ShowSystemMessage("● 錄音中…點擊停止 (WebGL)");
+        Debug.Log("[AudioRecorder] WebGL 開始錄音");
+    }
+
+    void StopWebGLRecording()
+    {
+        if (!_isRecording) return;
+
+        _lastRecordDuration = Time.time - _recordStartTime;
+#if UNITY_WEBGL && !UNITY_EDITOR
+        StopWebGLMic();
+#endif
+        _isRecording = false;
+        SetButtonColor(idleColor);
+        uiManager.ShowSystemMessage("🔄 處理音訊中…");
+        Debug.Log("[AudioRecorder] WebGL 停止錄音，等待瀏覽器回傳音訊");
+    }
+
+    /// <summary>
+    /// 由 WebGL 端的 .jslib 透過 SendMessage 異步回傳的 Base64 音訊資料
+    /// </summary>
+    public void OnWebGLMicData(string base64Audio)
+    {
+        if (string.IsNullOrEmpty(base64Audio))
+        {
+            uiManager.ShowSystemMessage("錄音失敗或瀏覽器權限被拒絕");
+            return;
+        }
+
+        if (_lastRecordDuration < 0.5f)
+        {
+            uiManager.ShowSystemMessage("錄音太短，請重試");
+            return;
+        }
+
+        try
+        {
+            // 將 Base64 字串還原為二進位音訊（WebM 格式）
+            byte[] audioBytes = Convert.FromBase64String(base64Audio);
+
+            uiManager.ShowSystemMessage("🔄 辨識中…");
+            // 直接發送給後端大腦 (Groq Whisper 支援 webm)
+            streamerClient.SendAudioBytes(audioBytes);
+            Debug.Log($"[AudioRecorder] WebGL 成功發送音訊位元組，大小: {audioBytes.Length} bytes");
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"[AudioRecorder] 解析 WebGL 音訊 Base64 失敗: {ex.Message}");
+            uiManager.ShowSystemMessage("音訊格式解析錯誤");
+        }
+    }
+
+    void Update()
+    {
+        if (_isRecording && Time.time - _recordStartTime >= maxRecordSeconds)
+        {
+            Debug.LogWarning("[AudioRecorder] WebGL 達到最長錄音時間，自動停止");
+            StopWebGLRecording();
+        }
+    }
 
 #endif  // !UNITY_WEBGL || UNITY_EDITOR
+
+// ═══════════════════════════════════════════════════════════
+// 跨平台通用方法
+// ═══════════════════════════════════════════════════════════
+    void SetButtonColor(Color c)
+    {
+        if (micButton == null) return;
+        var img = micButton.GetComponent<Image>();
+        if (img != null) img.color = c;
+    }
 }

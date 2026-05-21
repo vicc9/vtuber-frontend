@@ -13,7 +13,6 @@ public class UIManager : MonoBehaviour
     public GameObject aiMessagePrefab;
     public Button     historyButton;
 
-
     [Header("輸入區（WebGL 由 HTML 層接管）")]
     public RectTransform  inputFieldRect;
     public TMP_InputField inputField;
@@ -71,13 +70,13 @@ public class UIManager : MonoBehaviour
         if (string.IsNullOrEmpty(text)) return;
 
         AddUserMessage(text);
-        
+
         // 🌟 修正：使用遺忘模式（Fire-and-Forget）安全呼叫 Task，避免異常在 WebGL 層被吞掉
-        _ = _streamerClient?.SendText(text); 
+        _ = _streamerClient?.SendText(text);
     }
 
     // ─────────────────────────────────────────
-    // WebGL
+    // WebGL 專用區塊
     // ─────────────────────────────────────────
 #if UNITY_WEBGL && !UNITY_EDITOR
 
@@ -87,15 +86,18 @@ public class UIManager : MonoBehaviour
     [System.Runtime.InteropServices.DllImport("__Internal")]
     private static extern void ClearNativeInput();
 
+    // 👇👇👇 【本次修正：補上這行外部 JS 函數宣告】 👇👇👇
+    [System.Runtime.InteropServices.DllImport("__Internal")]
+    private static extern void SetWebGLInputValue(string text);
+
     void SetupWebGL()
     {
         if (inputField != null)  inputField.gameObject.SetActive(false);
         if (sendButton != null)  sendButton.gameObject.SetActive(false);
         if (micButton  != null)  micButton.gameObject.SetActive(false);
 
-        // 👇👇👇 關鍵修正 2：確保 Unity 引擎不會霸佔鍵盤事件，讓 HTML 輸入框可以正常切換中英文 👇👇👇
+        // 確保 Unity 引擎不會霸佔鍵盤事件，讓 HTML 輸入框可以正常切換中英文
         WebGLInput.captureAllKeyboardInput = false;
-        // 👆👆👆 加上這行能完美配合 jslib 裡的 stopPropagation 👆👆👆
 
         InitPersistentInput();
     }
@@ -117,7 +119,7 @@ public class UIManager : MonoBehaviour
         if (string.IsNullOrEmpty(text)) return;
 
         AddUserMessage(text);
-        
+
         // 🌟 安全調用 Task
         _ = _streamerClient?.SendText(text);
 
@@ -161,7 +163,6 @@ public class UIManager : MonoBehaviour
             tmp.text                    = text;
             tmp.enableWordWrapping       = true;
             tmp.overflowMode            = TextOverflowModes.Overflow;
-
         }
         if (_historyVisible) StartCoroutine(ScrollToBottom());
     }
@@ -176,7 +177,6 @@ public class UIManager : MonoBehaviour
             tmp.text              = text;
             tmp.enableWordWrapping = true;
             tmp.overflowMode      = TextOverflowModes.Overflow;
-
         }
 
         if (aiSubtitleText != null)
@@ -194,6 +194,18 @@ public class UIManager : MonoBehaviour
             StopCoroutine(_clearSubtitleCoroutine);
         _clearSubtitleCoroutine =
             StartCoroutine(ClearSubtitleAfter(systemMessageDuration));
+    }
+
+    // 讓輸入框顯示 STT 結果，但不自動送出
+    public void SetInputFieldText(string text)
+    {
+        if (inputField != null)
+            inputField.text = text;
+
+        // 若是 WebGL HTML 輸入框（IMEBridge），透過 JS 橋接更新
+    #if UNITY_WEBGL && !UNITY_EDITOR
+        SetWebGLInputValue(text);   // 現在這裡可以正常編譯了！
+    #endif
     }
 
     IEnumerator ClearSubtitleAfter(float seconds)
