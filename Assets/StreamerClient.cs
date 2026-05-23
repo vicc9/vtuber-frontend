@@ -94,12 +94,14 @@ public class StreamerClient : MonoBehaviour
     {
         _lastToken = token;  // 保存供重連使用
         string host = "localhost:8000";
+		string scheme = "ws"; // 新增 scheme 變數
 #if UNITY_WEBGL && !UNITY_EDITOR
         string pageUrl  = Application.absoluteURL;
         string withPort = pageUrl.Replace("https://", "")
                                  .Replace("http://", "")
                                  .Split('/')[0];
         host = withPort;
+		scheme = pageUrl.StartsWith("https://") ? "wss" : "ws";
 #endif
         string wsUrl = string.IsNullOrEmpty(token)
             ? $"ws://{host}/ws"

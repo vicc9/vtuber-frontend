@@ -19,14 +19,17 @@ public class AuthManager : MonoBehaviour
     {
         // 動態取得 host（與 StreamerClient 相同邏輯）
         string host = "localhost:8000";
+		string httpScheme = "http"; // 新增
+
 #if UNITY_WEBGL && !UNITY_EDITOR
         string pageUrl = Application.absoluteURL;
         host = pageUrl.Replace("https://", "")
                       .Replace("http://", "")
                       .Split('/')[0];
+		httpScheme = pageUrl.StartsWith("https://") ? "https" : "http";
 #endif
-        _tokenUrl = $"http://{host}/api/token?client_id=vtuber_app";
-        StartCoroutine(FetchTokenAndConnect());
+        _tokenUrl = $"{httpScheme}://{host}/api/token?client_id=vtuber_app";
+		StartCoroutine(FetchTokenAndConnect());
     }
 
     IEnumerator FetchTokenAndConnect()
