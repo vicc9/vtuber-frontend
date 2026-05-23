@@ -8,16 +8,13 @@ using Live2D.Cubism.Core;
 
 public class StreamerClient : MonoBehaviour
 {
-    // 🌟 新增：全域靜態實例，用來確保不論前端呼叫到哪一個物件，都能找到真正連線的那個實例
     public static StreamerClient Instance { get; private set; }
 
     WebSocket websocket;
 
-    // 關鍵修正：透過本地布林值避開 WebGL 的 State 同步 Bug
     private bool _isConnected = false;
-    private string _lastToken = "";  // 重連時帶回 token
+    private string _lastToken = "";
 
-    // 提供給 UIManager 或 UIManagerBridge 讀取的公開屬性
     public bool IsConnected => _isConnected;
 
     [Header("音訊")]
@@ -37,7 +34,6 @@ public class StreamerClient : MonoBehaviour
 
     void Awake()
     {
-        // 🌟 新增：單例初始化防禦機制
         if (Instance != null && Instance != this)
         {
             Debug.LogWarning($"[WS] 偵測到重複或多餘的 StreamerClient 在物件【{gameObject.name}】上。");
@@ -78,7 +74,6 @@ public class StreamerClient : MonoBehaviour
 
     void Update()
     {
-        // NativeWebSocket 必須在 Update 中持續調度訊息佇列（WebGL 平台以外需要）
         if (websocket != null)
         {
             websocket.DispatchMessageQueue();
@@ -92,30 +87,27 @@ public class StreamerClient : MonoBehaviour
 
     private async Task ConnectAsync(string token)
     {
-        _lastToken = token;  // 保存供重連使用
+        _lastToken = token;
         string host = "localhost:8000";
-		string scheme = "ws"; // 新增 scheme 變數
+        string scheme = "ws";
+
 #if UNITY_WEBGL && !UNITY_EDITOR
-        string pageUrl  = Application.absoluteURL;
-        string withPort = pageUrl.Replace("https://", "")
-                                 .Replace("http://", "")
-                                 .Split('/')[0];
-        host = withPort;
-		scheme = pageUrl.StartsWith("https://") ? "wss" : "ws";
+        host = "vtuber-backend-qwmt.onrender.com";
+        scheme = "wss";
 #endif
+
         string wsUrl = string.IsNullOrEmpty(token)
-            ? $"ws://{host}/ws"
-            : $"ws://{host}/ws?token={token}";
+            ? $"{scheme}://{host}/ws"
+            : $"{scheme}://{host}/ws?token={token}";
 
         Debug.Log($"[WS] 連線至: {wsUrl}");
 
         websocket = new WebSocket(wsUrl);
 
-        // 在事件中同步更新 _isConnected 狀態
         websocket.OnOpen += () => {
             Debug.Log($"已成功連接至 AI 主播後端！(物件: {gameObject.name})");
             _isConnected = true;
-            Instance = this; // 確保連線成功的實例被指定為主要實例
+            Instance = this;
         };
 
         websocket.OnError += (e) => {
@@ -127,7 +119,6 @@ public class StreamerClient : MonoBehaviour
             Debug.Log($"連線已中斷，代碼: {c}");
             _isConnected = false;
 
-            // 非正常關閉（Undefined / 非 1000）就嘗試重連
             if (c != WebSocketCloseCode.Normal)
             {
                 Debug.Log("偵測到非正常斷線，3 秒後嘗試重連...");
@@ -146,13 +137,10 @@ public class StreamerClient : MonoBehaviour
         await websocket.Connect();
     }
 
-    // 🌟 關鍵新增：專門餵給網頁端 JS 的 SendMessage 橋接方法（必須為 void 且接收單一 string）
-    // 請確認你網頁前端 index.html 的 SendMessage("物件名稱", "SubmitTextFromHTML", 文字); 改成叫這個名字
     public void SubmitTextFromHTML(string message)
     {
         Debug.Log($"[HTML-Bridge] 收到網頁 JS 轉來的文字: {message}");
 
-        // 檢查如果自己沒連線成功，但別的實例成功了，就直接幫忙轉發出去
         if (!_isConnected && Instance != null && Instance != this && Instance.IsConnected)
         {
             Debug.Log($"🔀 [自動重導向] 當前組件未連線，已自動將網頁文字轉發給真正連線的實例。");
@@ -160,17 +148,12 @@ public class StreamerClient : MonoBehaviour
         }
         else
         {
-            // 如果自己就是連線主體，直接叫用原本的 SendText
             _ = SendText(message);
         }
     }
 
-    /// <summary>
-    /// 發送文字訊息給後端
-    /// </summary>
     public async Task SendText(string message)
     {
-        // 🌟 額外保險：如果從 C# 內部其他地方呼叫此方法，也加上自動路由導向
         if (!_isConnected && Instance != null && Instance != this && Instance.IsConnected)
         {
             await Instance.SendText(message);
@@ -195,9 +178,6 @@ public class StreamerClient : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// 發送麥克風錄音的二進位資料給後端（修復 AudioRecorder 報錯）
-    /// </summary>
     public async Task SendAudioBytes(byte[] audioData)
     {
         if (!_isConnected && Instance != null && Instance != this && Instance.IsConnected)
@@ -352,7 +332,8 @@ public class StreamerClient : MonoBehaviour
 
         while (pos < wavBytes.Length - 8)
         {
-            if (wavBytes[pos] == 'd' && wavBytes[pos + 1] == 'a' && wavBytes[pos + 2] == 't' && wavBytes[pos + 3] == 'a')
+            if (wavBytes[pos] == 'd' && wavBytes[pos + 1] == 'a' &&
+                wavBytes[pos + 2] == 't' && wavBytes[pos + 3] == 'a')
             {
                 pos += 4;
                 int dataSize = System.BitConverter.ToInt32(wavBytes, pos);
