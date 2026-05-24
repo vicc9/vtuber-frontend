@@ -6,8 +6,54 @@
     <title>Unity Web Player | VTuber_Frontend</title>
     <link rel="shortcut icon" href="TemplateData/favicon.ico">
     <link rel="stylesheet" href="TemplateData/style.css">
+    <style>
+      /* 音頻解鎖遮罩 */
+      #audio-unlock-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.82);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        z-index: 9999;
+        color: #fff;
+        font-family: sans-serif;
+        gap: 16px;
+        transition: opacity 0.4s ease;
+      }
+      #audio-unlock-overlay.hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+      #audio-unlock-overlay p {
+        font-size: 18px;
+        margin: 0;
+        opacity: 0.85;
+      }
+      #audio-unlock-btn {
+        padding: 14px 40px;
+        font-size: 20px;
+        font-weight: bold;
+        border: none;
+        border-radius: 8px;
+        background: #4a9eff;
+        color: #fff;
+        cursor: pointer;
+        box-shadow: 0 4px 20px rgba(74,158,255,0.5);
+        transition: transform 0.1s, background 0.2s;
+      }
+      #audio-unlock-btn:hover { background: #2e85e8; }
+      #audio-unlock-btn:active { transform: scale(0.97); }
+    </style>
   </head>
   <body>
+
+    <div id="audio-unlock-overlay">
+      <p>🎙️ 點擊以進入直播間並啟用語音功能</p>
+      <button id="audio-unlock-btn">進入直播間</button>
+    </div>
+
     <div id="unity-container" class="unity-desktop">
       <canvas id="unity-canvas" width=960 height=600 tabindex="-1"></canvas>
       <div id="unity-loading-bar">
@@ -23,7 +69,85 @@
         <div id="unity-build-title">VTuber_Frontend</div>
       </div>
     </div>
+
     <script>
+      // ══════════════════════════════════════════
+      // 1. AudioContext 解鎖管理器
+      //    必須在用戶點擊後才能 resume()，
+      //    否則瀏覽器會阻擋所有 Web Audio API 呼叫。
+      // ══════════════════════════════════════════
+      var AudioUnlocker = {
+        _ctx: null,
+        _unlocked: false,
+
+        unlock: function() {
+          if (this._unlocked) return;
+
+          try {
+            // 建立或復用 AudioContext
+            var AC = window.AudioContext || window.webkitAudioContext;
+            if (!AC) {
+              console.warn("[Audio] 此瀏覽器不支援 AudioContext");
+              return;
+            }
+
+            this._ctx = new AC();
+
+            var self = this;
+            this._ctx.resume().then(function() {
+              self._unlocked = true;
+              console.log("[Audio] ✅ AudioContext 解鎖成功，state:", self._ctx.state);
+
+              // ── 關鍵：通知 Unity WebGL 音訊系統已就緒 ──
+              self._pingSilence();
+            }).catch(function(e) {
+              console.error("[Audio] AudioContext resume 失敗:", e);
+            });
+
+          } catch(e) {
+            console.error("[Audio] 建立 AudioContext 失敗:", e);
+          }
+        },
+
+        // 用靜音 buffer 觸發瀏覽器解鎖 Unity 內部的 AudioContext
+        _pingSilence: function() {
+          try {
+            var buf = this._ctx.createBuffer(1, 1, 22050);
+            var src = this._ctx.createBufferSource();
+            src.buffer = buf;
+            src.connect(this._ctx.destination);
+            src.start(0);
+            console.log("[Audio] 靜音 ping 已送出，Unity AudioContext 應已解鎖");
+          } catch(e) {
+            console.warn("[Audio] 靜音 ping 失敗:", e);
+          }
+        },
+
+        isUnlocked: function() { return this._unlocked; }
+      };
+
+      // ══════════════════════════════════════════
+      // 2. 解鎖遮罩按鈕邏輯
+      // ══════════════════════════════════════════
+      var overlay = document.getElementById("audio-unlock-overlay");
+      var unlockBtn = document.getElementById("audio-unlock-btn");
+
+      unlockBtn.addEventListener("click", function() {
+        // 解鎖音頻
+        AudioUnlocker.unlock();
+
+        // 淡出並移除遮罩
+        overlay.classList.add("hidden");
+        setTimeout(function() {
+          overlay.style.display = "none";
+        }, 450);
+
+        console.log("[UI] 用戶已點擊，遮罩關閉");
+      });
+
+      // ══════════════════════════════════════════
+      // 3. Unity WebGL 載入器
+      // ══════════════════════════════════════════
       var canvas = document.querySelector("#unity-canvas");
 
       function unityShowBanner(msg, type) {
@@ -88,11 +212,77 @@
             unityInstance.SetFullscreen(1);
           };
 
+          console.log("[Unity] ✅ Unity 實例已建立");
+
         }).catch((message) => {
           alert(message);
         });
       };
       document.body.appendChild(script);
+
+      // ══════════════════════════════════════════
+      // 4. 麥克風錄音邏輯 (解決 iOS Safari MIME Type 問題)
+      // ══════════════════════════════════════════
+      var mediaRecorder;
+      var audioChunks = [];
+
+      // 讓 Unity (.jslib) 呼叫的開始錄音函數
+      window.StartRecording = function(gameObjName, methodName) {
+        audioChunks = [];
+        navigator.mediaDevices.getUserMedia({ audio: true })
+          .then(function(stream) {
+            // ✅ 動態判斷支援格式，拯救 iPhone
+            var options = {};
+            if (MediaRecorder.isTypeSupported('audio/webm')) {
+                options = { mimeType: 'audio/webm' }; 
+            } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+                options = { mimeType: 'audio/mp4' };  
+            } else if (MediaRecorder.isTypeSupported('audio/aac')) {
+                options = { mimeType: 'audio/aac' };  
+            }
+            
+            console.log("[麥克風] 啟動錄音，格式:", options.mimeType || "預設");
+            mediaRecorder = new MediaRecorder(stream, options);
+
+            mediaRecorder.ondataavailable = function(e) {
+                if (e.data.size > 0) audioChunks.push(e.data);
+            };
+
+            mediaRecorder.onstop = function() {
+                console.log("[麥克風] 錄音結束，準備回傳 Unity");
+                var audioBlob = new Blob(audioChunks, { type: options.mimeType || 'audio/mp4' });
+                
+                var reader = new FileReader();
+                reader.readAsDataURL(audioBlob);
+                reader.onloadend = function() {
+                    // 移除 base64 標頭 (例如 "data:audio/mp4;base64,")，只傳送純 Base64 給 Unity
+                    var base64data = reader.result.split(',')[1]; 
+
+                    if (window.unityInstance) {
+                        // 若 Unity 端有傳入特定的物件與方法名稱，就用傳入的；否則使用預設值
+                        var targetObj = gameObjName || "WebMicController";
+                        var targetMethod = methodName || "OnAudioReady";
+                        window.unityInstance.SendMessage(targetObj, targetMethod, base64data);
+                    }
+                };
+            };
+
+            mediaRecorder.start();
+          })
+          .catch(function(error) {
+            console.error("❌ 無法啟動麥克風:", error);
+            alert("無法存取麥克風，請確保您已在手機設定中允許網頁使用麥克風！");
+          });
+      };
+
+      // 讓 Unity (.jslib) 呼叫的停止錄音函數
+      window.StopRecording = function() {
+        if (mediaRecorder && mediaRecorder.state !== "inactive") {
+            mediaRecorder.stop();
+            // 關閉麥克風硬體佔用 (消除右上角小橘點)
+            mediaRecorder.stream.getTracks().forEach(function(track) { track.stop(); });
+        }
+      };
     </script>
   </body>
 </html>

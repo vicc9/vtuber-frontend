@@ -216,7 +216,7 @@ public class AudioRecorder : MonoBehaviour
     /// <summary>
     /// 由 WebGL 端的 .jslib 透過 SendMessage 異步回傳的 Base64 音訊資料
     /// </summary>
-    public void OnWebGLMicData(string base64Audio)
+    public void OnWebGLAudioReady(string base64Audio)
     {
         if (string.IsNullOrEmpty(base64Audio))
         {
